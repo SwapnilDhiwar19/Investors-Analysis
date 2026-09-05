@@ -4,6 +4,7 @@ import json
 import os
 from google import genai
 from datetime import datetime
+import time
 
 # --- 1. CONFIGURATION & MODEL SETUP ---
 # Recommended: load securely via st.secrets or environment variable
@@ -12,7 +13,8 @@ if "GEMINI_API_KEY" not in st.secrets:
     st.error("Missing Gemini API Key. Please configure secrets.toml or Streamlit Cloud secrets.")
     st.stop()
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-MODEL_ID = "gemini-3.6-flash"
+PRIMARY_MODEL = "gemini-3.6-flash"
+FALLBACK_MODEL = "gemini-3.6-pro"
 
 st.set_page_config(
     page_title="AI Driven Self-serviced Analytics | BIU",
@@ -208,11 +210,29 @@ if uploaded_file is not None:
                     }}
                     """
 
-                    response = client.models.generate_content(
-                        model=MODEL_ID,
-                        contents=prompt,
-                        config={"response_mime_type": "application/json"}
-                    )
+                    response = generate_content_with_retry(client, prompt):
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
+    
+    for model_name in models_to_try:
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"}
+                )
+                return response
+            except Exception as e:
+                err_str = str(e)
+                # If Google server is busy (503 / 429), wait and retry
+                if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
+                    wait_seconds = (attempt + 1) * 2  # Waits 2s, then 4s, then 6s
+                    time.sleep(wait_seconds)
+                    continue
+                # If the model itself isn't found/supported, break immediately to the fallback model
+                break
+                
+    raise Exception("Google AI servers are currently saturated across models. Please wait 15 seconds and click Analyze again.")
 
                     try:
                         parsed = json.loads(response.text.strip())
