@@ -12,7 +12,7 @@ if "GEMINI_API_KEY" not in st.secrets:
     st.error("Missing Gemini API Key. Please configure secrets.toml or Streamlit Cloud secrets.")
     st.stop()
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-MODEL_ID = "gemini-3-flash-preview"
+MODEL_ID = "gemini-2.5-flash"
 
 st.set_page_config(
     page_title="AI Driven Self-serviced Analytics | BIU",
