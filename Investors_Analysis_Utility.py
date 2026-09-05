@@ -2,26 +2,52 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import time
 from google import genai
 from datetime import datetime
-import time
 
 # --- 1. CONFIGURATION & MODEL SETUP ---
-# Recommended: load securely via st.secrets or environment variable
-# Safely pull the key from Streamlit's secrets manager
-if "GEMINI_API_KEY" not in st.secrets:
-    st.error("Missing Gemini API Key. Please configure secrets.toml or Streamlit Cloud secrets.")
-    st.stop()
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-PRIMARY_MODEL = "gemini-3.6-flash"
-FALLBACK_MODEL = "gemini-3.6-pro"
-
 st.set_page_config(
     page_title="AI Driven Self-serviced Analytics | BIU",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# Securely retrieve the key from Streamlit Secrets or Environment Variable
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    st.error("⚠️ GEMINI_API_KEY not found. Please configure it in your Streamlit Secrets.")
+    st.stop()
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+PRIMARY_MODEL = "gemini-3.6-flash"
+FALLBACK_MODEL = "gemini-3.6-pro"
+
+def generate_content_with_retry(client_obj, prompt_text, max_retries=3):
+    """Executes prompt with backoff retries and model failover against 503 capacity spikes."""
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
+    
+    for model_name in models_to_try:
+        for attempt in range(max_retries):
+            try:
+                res = client_obj.models.generate_content(
+                    model=model_name,
+                    contents=prompt_text,
+                    config={"response_mime_type": "application/json"}
+                )
+                return res
+            except Exception as e:
+                err_str = str(e)
+                if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
+                    wait_seconds = (attempt + 1) * 2
+                    time.sleep(wait_seconds)
+                    continue
+                break
+                
+    raise Exception("Google AI servers are currently experiencing high demand. Please try again in a few seconds.")
 
 # --- 2. THEME (HDFC-inspired: deep blue + red, on white) ---
 HDFC_BLUE = "#004C8F"
@@ -168,17 +194,15 @@ if uploaded_file is not None:
 
         with tab_ask:
             st.caption("Try: *'Disbursement breakdown across zones'* or *'Delinquency rates across ticket sizes'*")
-            query = st.text_input("Your question", label_visibility="collapsed",
-                                  placeholder="Enter your business question...")
-
+            query = st.text_input("Your question", label_visibility="collapsed", placeholder="Enter your business question...")
+            
             run = False
             _, btn_col, _ = st.columns([2, 1, 2])
             with btn_col:
                 run = st.button("Analyze", use_container_width=True)
 
             if run and query:
-                with st.spinner("Crunching numbers, building cross-tabs, and generating charts..."):
-                    # Extract sample context to ground LLM numerical calculations
+                with st.spinner("Crunching numbers, compiling cross-tabs, and rendering charts..."):
                     col_summary = "\n".join([f"- {col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)])
                     num_summary = df.describe().to_string()
 
@@ -193,16 +217,16 @@ if uploaded_file is not None:
                     BUSINESS QUESTION: "{query}"
 
                     CRITICAL REQUIREMENTS:
-                    1. Cross-Tab & Visuals: The executable code MUST ALWAYS output both:
-                       - An aggregated cross-tab / pivot table using `st.dataframe(...)` or `st.table(...)`. Format currencies/percentages properly.
+                    1. Cross-Tab & Visuals: The executable code MUST ALWAYS output BOTH:
+                       - An aggregated cross-tab or pivot table using `st.dataframe(...)` or `st.table(...)`.
                        - A primary visual chart using `st.bar_chart(...)` or `st.line_chart(...)`.
                     2. Deep Analytical Writeup:
-                       - Explicitly discuss concrete numerical points, baseline averages, and percentage movements.
-                       - Highlight the core trend and driver behind the variance.
+                       - Explicitly discuss concrete numerical points, baseline averages, and percentage variances.
+                       - Highlight the core trends and drivers behind the numbers.
                     3. Caveats & Self-Analysis:
                        - Mention sample skews, outliers, zero-value concentrations, or missing slices that readers should consider before making credit/business decisions.
 
-                    Respond ONLY with a valid JSON object (no markdown, no ```json wrapper) containing:
+                    Respond ONLY with a valid JSON object (no markdown, no backticks) containing:
                     {{
                         "executive_summary": "Thorough 3-5 sentence breakdown referencing numbers, percentages, and direction of trends.",
                         "caveats_and_risks": "2-3 sentences covering data caveats, concentration risks, or statistical biases.",
@@ -211,31 +235,14 @@ if uploaded_file is not None:
                     """
 
                     response = generate_content_with_retry(client, prompt)
-    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
-    
-    for model_name in models_to_try:
-        for attempt in range(max_retries):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config={"response_mime_type": "application/json"}
-                )
-                return response
-            except Exception as e:
-                err_str = str(e)
-                # If Google server is busy (503 / 429), wait and retry
-                if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
-                    wait_seconds = (attempt + 1) * 2  # Waits 2s, then 4s, then 6s
-                    time.sleep(wait_seconds)
-                    continue
-                # If the model itself isn't found/supported, break immediately to the fallback model
-                break
-                
-    raise Exception("Google AI servers are currently saturated across models. Please wait 15 seconds and click Analyze again.")
-
+                    
                     try:
-                        parsed = json.loads(response.text.strip())
+                        clean_json = response.text.strip()
+                        if clean_json.startswith("```"):
+                            clean_json = clean_json.strip("`")
+                            if clean_json.lower().startswith("json"):
+                                clean_json = clean_json[4:]
+                        parsed = json.loads(clean_json)
                         summary = parsed.get("executive_summary", "")
                         caveats = parsed.get("caveats_and_risks", "")
                         clean_code = parsed.get("code", "")
