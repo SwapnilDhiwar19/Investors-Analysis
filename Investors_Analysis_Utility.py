@@ -210,7 +210,7 @@ if uploaded_file is not None:
                     }}
                     """
 
-                    response = generate_content_with_retry(client, prompt):
+                    response = generate_content_with_retry(client, prompt)
     models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
     
     for model_name in models_to_try:
